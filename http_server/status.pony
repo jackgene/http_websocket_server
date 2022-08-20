@@ -122,6 +122,9 @@ primitive StatusExpectationFailed is Status
 primitive StatusTeapot is Status
   fun apply(): U16 => 418
   fun string(): String => "418 I'm a teapot"
+primitive StatusUpgradeRequired is Status
+  fun apply(): U16 => 426
+  fun string(): String => "426 Upgrade Required"
 primitive StatusPreconditionRequired is Status
   fun apply(): U16 => 428
   fun string(): String => "428 Precondition Required"
