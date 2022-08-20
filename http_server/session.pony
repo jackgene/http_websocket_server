@@ -224,6 +224,15 @@ trait tag Session
     """
     None
 
+  be upgrade_to_websocket(request: Request val, request_id: RequestID, handlermaker: WebSocketHandlerFactory val) =>
+    """
+    Upgrades this connection to WebSocket, performing the handshake.
+
+    Takes a `WebSocketHandlerFactory` which produces the `WebSocketHandler`
+    for the connection if the upgrade succeeds.
+    """
+    None
+
   be dispose() =>
     """
     Close the connection from this end.

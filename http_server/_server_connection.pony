@@ -1,10 +1,12 @@
 use "net"
 use "collections"
+use "crypto"
+use "encode/base64"
 use "valbytes"
 use "debug"
 use "time"
 
-actor _ServerConnection is (Session & HTTP11RequestHandler)
+actor _ServerConnection is (Session & HTTP11RequestHandler & WebSocketSession)
   """
   Manages a stream of requests coming into a server from a single client,
   dispatches those request to a back-end, and returns the responses back
@@ -15,6 +17,7 @@ actor _ServerConnection is (Session & HTTP11RequestHandler)
   let _backend: Handler
   let _config: ServerConfig
   let _conn: TCPConnection
+  var _websocket_backend: (WebSocketHandler | None) = None
   var _close_after: (RequestID | None) = None
 
   var _active_request: RequestID = RequestIDs.max_value()
@@ -264,6 +267,107 @@ actor _ServerConnection is (Session & HTTP11RequestHandler)
       _pending_responses.add_pending_arrays(request_id, raw)
     end
 
+//// WebSocket API
+
+  be upgrade_to_websocket(request: Request val, request_id: RequestID, handlermaker: WebSocketHandlerFactory val) =>
+    """
+    Upgrades connection to WebSocket.
+    """
+    try
+      send_raw(_websocket_handshake(request)?, request_id)
+      _websocket_backend = handlermaker(this)
+    else
+      let body = "Please upgrade to websocket/13"
+      let response = Responses.builder()
+        .set_status(StatusUpgradeRequired)
+        .add_header("Content-Type", "text/plain")
+        .add_header("Content-Length", body.size().string())
+        .add_header("Connection", "Upgrade")
+        .add_header("Upgrade", "websocket")
+        .add_header("sec-websocket-version", "13")
+        .finish_headers()
+        .add_chunk(body.array())
+        .build()
+      send_raw(response, RequestIDs.next(request_id))
+      send_finished(request_id)
+    end
+    // TODO upgrade connection handler
+
+  fun _websocket_handshake(request: Request val): ByteSeqIter val ? =>
+    match (
+      request.header("sec-websocket-version"),
+      request.header("sec-websocket-key"),
+      request.header("upgrade"),
+      request.header("connection")
+    )
+    | (
+        let version: String,
+        let request_key: String,
+        let upgrade: String,
+        let connection: String
+      )
+      if (version == "13") and (upgrade.lower() == "websocket") =>
+
+      var conn_upgrade = false
+      for s in connection.split_by(",").values() do
+        if s.lower().>strip(" ") == "upgrade" then
+          conn_upgrade = true
+          break
+        end
+      end
+      if not conn_upgrade then error end
+
+      Responses.builder()
+        .set_status(StatusSwitchingProtocols)
+        .add_header("Connection", "Upgrade")
+        .add_header("Upgrade", "websocket")
+        .add_header("Sec-WebSocket-Accept", _websocket_accept_key(request_key))
+        .finish_headers()
+        .build()
+    else
+      error
+    end
+
+  fun _websocket_accept_key(key: String): String =>
+    let c = key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+    let digest = Digest.sha1()
+    try
+      digest.append(consume c)?
+    end
+    let d = digest.final()
+    Base64.encode(d)
+
+  be send_text(text: String) =>
+    """
+    """
+    _send_websocket_frame(WebSocketFrame.text(text))
+  
+  be send_binary(data: Array[U8 val] val) =>
+    """
+    """
+    _send_websocket_frame(WebSocketFrame.binary(data))
+
+  be send_close(code: U16 = 1000) =>
+    """
+    """
+    _send_websocket_frame(WebSocketFrame.close(code))
+
+  be send_ping(data: Array[U8 val] val) =>
+    """
+    """
+    _send_websocket_frame(WebSocketFrame.ping(data))
+
+  be send_pong(data: Array[U8 val] val) =>
+    """
+    """
+    _send_websocket_frame(WebSocketFrame.pong(data))
+
+  fun ref _send_websocket_frame(frame: WebSocketFrame) =>
+    // TODO more optimized implementation
+    send_raw(frame.build(), RequestIDs.next(_sent_response))
+
+//// Backpressure etc
+
   be throttled() =>
     """
     TCP connection can not accept data for a while.
@@ -290,4 +394,3 @@ actor _ServerConnection is (Session & HTTP11RequestHandler)
       // backend is notified asynchronously when the close happened
       dispose()
     end
-
