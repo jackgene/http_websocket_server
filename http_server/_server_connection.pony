@@ -12,7 +12,7 @@ actor _ServerConnection is (Session & WebSocketSession)
   to the client.
 
   """
-  let _protocol: _HTTPServerConnectionProtocol
+  var _protocol: (_HTTPServerConnectionProtocol | _WebSocketServerConnectionProtocol)
   let _config: ServerConfig
   let _conn: TCPConnection
   let _timeout: _ServerConnectionTimeout = _ServerConnectionTimeout
@@ -63,20 +63,35 @@ actor _ServerConnection is (Session & WebSocketSession)
     Initiate transmission of the HTTP Response message for the current
     Request.
     """
-    _protocol._send_start(response, request_id)
+    match _protocol
+    | let http: _HTTPServerConnectionProtocol =>
+      http._send_start(response, request_id)
+    else
+      Debug("Unable to send HTTP response on upgraded protocol")
+    end
 
   be send_chunk(data: ByteSeq val, request_id: RequestID) =>
     """
     Write low level outbound raw byte stream.
     """
-    _protocol._send_chunk(data, request_id)
+    match _protocol
+    | let http: _HTTPServerConnectionProtocol =>
+      http._send_chunk(data, request_id)
+    else
+      Debug("Unable to send HTTP response on upgraded protocol")
+    end
 
   be send_finished(request_id: RequestID) =>
     """
     We are done sending a response. We close the connection if
     `keepalive` was not requested.
     """
-    _protocol._send_finished(request_id)
+    match _protocol
+    | let http: _HTTPServerConnectionProtocol =>
+      http._send_finished(request_id)
+    else
+      Debug("Unable to send HTTP response on upgraded protocol")
+    end
 
   be send_cancel(request_id: RequestID) =>
     """
@@ -84,7 +99,12 @@ actor _ServerConnection is (Session & WebSocketSession)
 
     TODO: keep this???
     """
-    _protocol._cancel(request_id)
+    match _protocol
+    | let http: _HTTPServerConnectionProtocol =>
+      http._cancel(request_id)
+    else
+      Debug("Unable to send HTTP response on upgraded protocol")
+    end
 
 //// CONVENIENCE API
 
@@ -94,14 +114,24 @@ actor _ServerConnection is (Session & WebSocketSession)
 
     This function calls `send_finished` for you, so no need to call it yourself.
     """
-    _protocol._send_start(response, request_id)
-    _protocol._send_finished(request_id)
+    match _protocol
+    | let http: _HTTPServerConnectionProtocol =>
+      http._send_start(response, request_id)
+      http._send_finished(request_id)
+    else
+      Debug("Unable to send HTTP response on upgraded protocol")
+    end
 
   be send(response: Response val, body: ByteArrays, request_id: RequestID) =>
     """
     Start and finish sending a response with body.
     """
-    _protocol._send(response, body, request_id)
+    match _protocol
+    | let http: _HTTPServerConnectionProtocol =>
+      http._send(response, body, request_id)
+    else
+      Debug("Unable to send HTTP response on upgraded protocol")
+    end
 
 //// OPTIMIZED API
 
@@ -124,7 +154,12 @@ actor _ServerConnection is (Session & WebSocketSession)
 
     In each case, finish sending your raw response using `send_finished`.
     """
-    _protocol._send_raw(raw, request_id, close_session)
+    match _protocol
+    | let http: _HTTPServerConnectionProtocol =>
+      http._send_raw(raw, request_id, close_session)
+    else
+      Debug("Unable to send HTTP response on upgraded protocol")
+    end
 
 //// WebSocket API
 
@@ -132,25 +167,30 @@ actor _ServerConnection is (Session & WebSocketSession)
     """
     Upgrades connection to WebSocket.
     """
-    try
-      send_raw(_websocket_handshake(request)?, request_id)
-      handlermaker(this)
+    match _protocol
+    | let http: _HTTPServerConnectionProtocol =>
+      try
+        http._send_raw(_websocket_handshake(request)?, request_id)
+        _protocol = _WebSocketServerConnectionProtocol(
+          handlermaker(this), _config, _conn, _timeout)
+      else
+        let body = "Please upgrade to websocket/13"
+        let response = Responses.builder()
+          .set_status(StatusUpgradeRequired)
+          .add_header("Content-Type", "text/plain")
+          .add_header("Content-Length", body.size().string())
+          .add_header("Connection", "Upgrade")
+          .add_header("Upgrade", "websocket")
+          .add_header("sec-websocket-version", "13")
+          .finish_headers()
+          .add_chunk(body.array())
+          .build()
+        http._send_raw(response, RequestIDs.next(request_id))
+        http._send_finished(request_id)
+      end
     else
-      let body = "Please upgrade to websocket/13"
-      let response = Responses.builder()
-        .set_status(StatusUpgradeRequired)
-        .add_header("Content-Type", "text/plain")
-        .add_header("Content-Length", body.size().string())
-        .add_header("Connection", "Upgrade")
-        .add_header("Upgrade", "websocket")
-        .add_header("sec-websocket-version", "13")
-        .finish_headers()
-        .add_chunk(body.array())
-        .build()
-      send_raw(response, RequestIDs.next(request_id))
-      send_finished(request_id)
+      Debug("Unable to send HTTP response on upgraded protocol")
     end
-    // TODO upgrade connection handler
 
   fun _websocket_handshake(request: Request val): ByteSeqIter val ? =>
     match (
