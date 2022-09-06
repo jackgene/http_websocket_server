@@ -6,7 +6,9 @@ use "valbytes"
 use "debug"
 use "time"
 
-actor _ServerConnection is (Session & HTTP11RequestHandler & WebSocketSession)
+actor _ServerConnection is (
+  Session & HTTP11RequestHandler & WebSocketSession & WebSocketFrameHandler
+)
   """
   Manages a stream of requests coming into a server from a single client,
   dispatches those request to a back-end, and returns the responses back
@@ -276,6 +278,9 @@ actor _ServerConnection is (Session & HTTP11RequestHandler & WebSocketSession)
     try
       send_raw(_websocket_handshake(request)?, request_id)
       _websocket_backend = handlermaker(this)
+      _conn.set_notify(
+        WebSocketFrameDecoder(this)
+      )
     else
       let body = "Please upgrade to websocket/13"
       let response = Responses.builder()
@@ -291,7 +296,6 @@ actor _ServerConnection is (Session & HTTP11RequestHandler & WebSocketSession)
       send_raw(response, RequestIDs.next(request_id))
       send_finished(request_id)
     end
-    // TODO upgrade connection handler
 
   fun _websocket_handshake(request: Request val): ByteSeqIter val ? =>
     match (
@@ -337,6 +341,36 @@ actor _ServerConnection is (Session & HTTP11RequestHandler & WebSocketSession)
     let d = digest.final()
     Base64.encode(d)
 
+  be _received_text_frame(text: String) =>
+    match _websocket_backend
+    | let backend: WebSocketHandler =>
+      backend.text_received(text)
+    end
+
+  be _received_binary_frame(data: Array[U8 val] val) =>
+    match _websocket_backend
+    | let backend: WebSocketHandler =>
+      backend.binary_received(data)
+    end
+
+  be _received_close_frame(code: U16) =>
+    match _websocket_backend
+    | let backend: WebSocketHandler =>
+      backend.close_received(code)
+    end
+
+  be _received_ping_frame(data: Array[U8 val] val) =>
+    match _websocket_backend
+    | let backend: WebSocketHandler =>
+      backend.ping_received(data)
+    end
+
+  be _received_pong_frame(data: Array[U8 val] val) =>
+    match _websocket_backend
+    | let backend: WebSocketHandler =>
+      backend.pong_received(data)
+    end
+
   be send_text(text: String) =>
     """
     """
@@ -363,8 +397,9 @@ actor _ServerConnection is (Session & HTTP11RequestHandler & WebSocketSession)
     _send_websocket_frame(WebSocketFrame.pong(data))
 
   fun ref _send_websocket_frame(frame: WebSocketFrame) =>
-    // TODO more optimized implementation
-    send_raw(frame.build(), RequestIDs.next(_sent_response))
+    _reset_timeout()
+    _conn.unmute()
+    _conn.writev(frame.build())
 
 //// Backpressure etc
 

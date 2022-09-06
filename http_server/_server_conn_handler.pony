@@ -87,6 +87,7 @@ class _ServerConnHandler is TCPConnectionNotify
     """
     The connection has been closed. Abort the session.
     """
+    Debug("close?")
     try
       let sconn = (_session as _ServerConnection)
       _registry.unregister_session(sconn)
