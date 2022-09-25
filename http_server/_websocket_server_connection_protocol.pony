@@ -7,8 +7,8 @@ class _WebSocketServerConnectionProtocol is _ServerConnectionProtocol
   let _config: ServerConfig
   let _conn: TCPConnection
   let _timeout: _ServerConnectionTimeout
-  let _buffer: Reader ref = Reader
-  let _decoder: _WebSocketDecoder ref = _WebSocketDecoder
+  let _buffer: Reader = Reader
+  var _decode_state: _WebSocketDecodeState ref = _ExpectHeader
 
   new create(
     backend: WebSocketHandler,
@@ -25,25 +25,51 @@ class _WebSocketServerConnectionProtocol is _ServerConnectionProtocol
     _timeout.reset()
     _buffer.append(consume data)
     try
-      match _decoder.decode(_buffer)?
-      | let f: WebSocketFrame val =>
-        Debug("decoded a frame")
-        match f.opcode
-        | Text   => _backend.text_received(f.data as String)
-        | Binary => _backend.binary_received(f.data as Array[U8] val)
-        | Close  => _backend.close_received(1000)
-        | Ping   => _backend.ping_received(f.data as Array[U8] val)
-        | Pong   => _backend.pong_received(f.data as Array[U8] val)
+      while true do
+        match _decode_state.decode_part(_buffer)?
+        | (let state_none: (_WebSocketDecodeState ref | None), let frame_none: (WebSocketFrame val | None)) =>
+          match state_none
+          | let state: _WebSocketDecodeState ref =>
+            _decode_state = state
+          end
+          match frame_none
+          | let t: Text   => _backend.text_received(t.payload)
+          | let b: Binary => _backend.binary_received(b.payload)
+          | let c: Close  => _backend.close_received(c.status)
+          | let p: Ping   => _backend.ping_received(p.payload)
+          | let p: Pong   => _backend.pong_received(p.payload)
+          end
+
+        | let err: WebSocketDecodeError =>
+          _backend.failed(err)
+          _send(
+            Close.with_reason(
+              match err
+              | let _: WebSocketDecodeFrameError => 1002
+              | let _: WebSocketDecodePayloadError => 1007
+              end,
+              match err
+              | ErrorNonZeroRSV => "RFC6455 5.2 (RSV1, RSV2, RSV3): MUST be 0 (extension not supported)"
+              | ErrorNotMasked => "RFC6455 5.1: a client MUST mask all frames that it sends to the server"
+              | ErrorUnsupportedOpCode => "RFC6455 5.2 (Opcode): Unsupported op code"
+              | ErrorControlFrameFragmented => "RFC6455 5.5: All control frames MUST NOT be fragmented"
+              | ErrorControlFrameTooLarge => "RFC6455 5.5: All control frames MUST have a payload length of 125 bytes or less"
+              | ErrorBadPayloadLength => "RFC6455 5.2 (Payload length): the minimal number of bytes MUST be used to encode the length"
+              | ErrorMalformedClosePayload => "RFC6455 5.5.1: Malformed close frame"
+              | ErrorNonUTF8Text => "RFC6455 5.5.1/5.6: Text of Close frame payload is not UTF-8 encoded"
+              end
+            )?
+          )
+          closed()
+          _conn.dispose()
+          break
+
+        | _NeedMore => break
         end
-      //   _conn.expect(2)? // expect next header
-      // | let n: USize =>
-      //     // need more data to parse an frame
-      //     // notice: if n > read_buffer_size, connection will be closed
-      //     _conn.expect(n)?
       end
     else
-      // Close connection?
-      closed() // TODO Notify failure?
+      _send(Close(1001))
+      closed()
       _conn.dispose()
     end
 
@@ -56,7 +82,7 @@ class _WebSocketServerConnectionProtocol is _ServerConnectionProtocol
   fun ref unthrottled() =>
     _backend.unthrottled()
 
-  fun ref _send_websocket_frame(frame: WebSocketFrame) =>
+  fun ref _send(frame: WebSocketFrame) =>
     _timeout.reset()
     _conn.unmute()
-    _conn.writev(frame.build())
+    _conn.writev(frame.encode())

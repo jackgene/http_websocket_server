@@ -236,35 +236,16 @@ actor _ServerConnection is (Session & WebSocketSession)
     let d = digest.final()
     Base64.encode(d)
 
-  be send_text(text: String) =>
-    """
-    """
-    _send_websocket_frame(WebSocketFrame.text(text))
-  
-  be send_binary(data: Array[U8 val] val) =>
-    """
-    """
-    _send_websocket_frame(WebSocketFrame.binary(data))
+  be send_frame(frame: WebSocketFrame val) =>
+    _send_frame(frame)
 
-  be send_close(code: U16 = 1000) =>
-    """
-    """
-    _send_websocket_frame(WebSocketFrame.close(code))
-
-  be send_ping(data: Array[U8 val] val) =>
-    """
-    """
-    _send_websocket_frame(WebSocketFrame.ping(data))
-
-  be send_pong(data: Array[U8 val] val) =>
-    """
-    """
-    _send_websocket_frame(WebSocketFrame.pong(data))
-
-  fun ref _send_websocket_frame(frame: WebSocketFrame) =>
-    _timeout.reset()
-    _conn.unmute()
-    _conn.writev(frame.build())
+  fun ref _send_frame(frame: WebSocketFrame) =>
+    match _protocol
+    | let ws: _WebSocketServerConnectionProtocol =>
+      ws._send(frame)
+    else
+      Debug("Unable to send WebSocket frame in non-WebSocket mode")
+    end
 
 //// Connection Management
 

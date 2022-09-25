@@ -1,91 +1,113 @@
 primitive UTF8
-
-  fun validate(data: Array[U8 val] iso, start_index: USize): Array[U8 val] iso^? =>
-    let buf = consume data
-    let len = buf.size()
-    var i = start_index
-    var valid: Bool = true
-
-    // TODO: multiline array
+  fun from_array(data: Array[U8 val] iso): (String iso^ | (String iso^, Array[U8 val] iso^))? =>
     let char_width: Array[U8] = [
-      1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1; 1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1; 1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1; 1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1; 1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1; 1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1; 1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1; 1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1; 0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0; 0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0; 0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0; 0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0; 0;0;2;2;2;2;2;2;2;2;2;2;2;2;2;2; 2;2;2;2;2;2;2;2;2;2;2;2;2;2;2;2; 3;3;3;3;3;3;3;3;3;3;3;3;3;3;3;3;4;4;4;4;4;0;0;0;0;0;0;0;0;0;0;0
+      1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1
+      1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1
+      1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1
+      1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1
+      1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1
+      1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1
+      1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1
+      1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1
+      // 0b1000_XXXX
+      0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0
+      0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0
+      0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0
+      0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0
+      // 0b1100_XXXX
+      0;0;2;2;2;2;2;2;2;2;2;2;2;2;2;2
+      2;2;2;2;2;2;2;2;2;2;2;2;2;2;2;2
+      3;3;3;3;3;3;3;3;3;3;3;3;3;3;3;3
+      4;4;4;4;4;0;0;0;0;0;0;0;0;0;0;0
     ]
+    let len: USize = data.size()
+    var i: USize = 0
+    var has_trailing: Bool = false
 
     while i < len do
-      let first = buf(i)?
-      if first > 128 then
-        let w = char_width(USize.from[U8](first))?
-        match w
+      match data(i)?
+      | let ascii: U8 if ascii < 0x80 =>
+        // 1-byte
+        i = i + 1
+
+      | let b0: U8 if b0 >= 0xc2 =>
+        match char_width(USize.from[U8](b0))?
         | 2 =>
-          if ((i + 1) == len) or _cont(buf(i + 1)?) then
-            valid = false
+          match len - i
+          | 1 =>
+            has_trailing = true
             break
-          else
-            i = i + 2
           end
+          _validate_continuation(data(i + 1)?)?
+          i = i + 2
+
         | 3 =>
-          if ((i + 2) >= len) then
-            valid = false
+          match len - i
+          | 1 =>
+            has_trailing = true
+            break
+          | 2 =>
+            _validate_3byte_codepoint(b0, data(i + 1)?)?
+            has_trailing = true
             break
           end
-          if _cont(buf(i + 2)?) then
-            valid = false
-            break
-          end
-
-          let b2 = buf(i + 1)?
-          if not (
-               ((first == 0xe0)              and _in_range(b2, 0xA0, 0xbf))
-            or (_in_range(first, 0xe1, 0xec) and _in_range(b2, 0x80, 0xbf))
-            or ((first == 0xed)              and _in_range(b2, 0x80, 0x9f))
-            or (_in_range(first, 0xee, 0xef) and _in_range(b2, 0x80, 0xbf))
-            ) then
-            valid = false
-            break
-          end
+          _validate_3byte_codepoint(b0, data(i + 1)?)?
+          _validate_continuation(data(i + 2)?)?
           i = i + 3
-        | 4 =>
-          if ((i + 3) >= len) then
-            valid = false
-            break
-          end
-          if _cont(buf(i + 2)?) or _cont(buf(i + 3)?) then
-            valid = false
-            break
-          end
 
-          let b2 = buf(i + 1)?
-          if not(
-               ((first == 0xf0)              and _in_range(b2, 0x90, 0xbf))
-            or (_in_range(first, 0xf1, 0xf3) and _in_range(b2, 0x80, 0xbf))
-            or ((first == 0xf4)              and _in_range(b2, 0x80, 0x8f))
-          ) then
-            valid = false
+        | 4 =>
+          match len - i
+          | 1 =>
+            has_trailing = true
+            break
+          | 2 =>
+            _validate_4byte_codepoint(b0, data(i + 1)?)?
+            has_trailing = true
+            break
+          | 3 =>
+            _validate_4byte_codepoint(b0, data(i + 1)?)?
+            _validate_continuation(data(i + 2)?)?
+            has_trailing = true
             break
           end
+          _validate_4byte_codepoint(b0, data(i + 1)?)?
+          _validate_continuation(data(i + 2)?)?
+          _validate_continuation(data(i + 3)?)?
           i = i + 4
 
-        | let o: U8 =>
-          valid = false
-          break
+        else
+          error
         end
-      else
-        if first == 128 then
-          valid = false
-          break
-        end
-        i = i + 1
       end
     end
 
-    if valid then
-      buf
+    if has_trailing then
+      (String.from_iso_array(consume data), [])
     else
+      String.from_iso_array(consume data)
+    end
+
+  fun _validate_continuation(byte: U8)? =>
+    if (byte < 0b1000_0000) or (0b1100_0000 <= byte) then error end
+
+  fun _out_of_range(byte: U8, lower: U8, upper: U8): Bool =>
+    (byte < lower) or (upper < byte)
+
+  fun _validate_3byte_codepoint(b0: U8, b1: U8)? =>
+    if
+      ((b0 != 0xe0)                  or _out_of_range(b1, 0xa0, 0xbf)) and
+      (_out_of_range(b0, 0xe1, 0xec) or _out_of_range(b1, 0x80, 0xbf)) and
+      ((b0 != 0xed)                  or _out_of_range(b1, 0x80, 0x9f)) and
+      (_out_of_range(b0, 0xee, 0xef) or _out_of_range(b1, 0x80, 0xbf))
+    then
       error
     end
 
-  fun _in_range(a: U8, b: U8, c: U8): Bool =>
-    (a >= b) and (a <= c)
-
-  fun _cont(a: U8): Bool =>
-    (a and (not 0b0011_1111)) != 0b1000_0000
+  fun _validate_4byte_codepoint(b0: U8, b1: U8)? =>
+    if
+      ((b0 != 0xf0)                  or _out_of_range(b1, 0x90, 0xbf)) and
+      (_out_of_range(b0, 0xf1, 0xf3) or _out_of_range(b1, 0x80, 0xbf)) and
+      ((b0 != 0xf4)                  or _out_of_range(b1, 0x80, 0x8f))
+    then
+      error
+    end

@@ -2,29 +2,34 @@ interface WebSocketHandler
   """
   Interface implemented by the application to handle WebSocket events.
   """
-  fun ref text_received(text: String) =>
+  fun ref text_received(payload: String) =>
     """
     Received a text frame.
     """
 
-  fun ref binary_received(data: Array[U8 val] val) =>
+  fun ref binary_received(payload: Array[U8 val] val) =>
     """
     Received a binary frame.
     """
 
-  fun ref close_received(code: U16) =>
+  fun ref close_received(status: (CloseStatus | None)) =>
     """
     Received a close frame.
     """
 
-  fun ref ping_received(data: Array[U8 val] val) =>
+  fun ref ping_received(payload: Array[U8 val] val) =>
     """
     Received a ping frame.
     """
 
-  fun ref pong_received(data: Array[U8 val] val) =>
+  fun ref pong_received(payload: Array[U8 val] val) =>
     """
     Received a pong frame.
+    """
+
+  fun ref failed(reason: WebSocketDecodeError) =>
+    """
+    Notification about failure decoding a WebSocket frame.
     """
 
   fun ref closed() =>
