@@ -209,7 +209,12 @@ primitive _WebSocketDecodeHelper
     let m3 = mask_key(2)?
     let m4 = mask_key(3)?
     // Microbenchmarks show that masking 16-bytes at a time is fastest
-    let stop = payload_len - 16
+    let stop =
+      match payload_len - 0xf
+      | let valid: USize if valid < payload_len => valid
+      else 0 // Overflowed
+      end
+
     while i < stop do
       payload(i)?       = payload(i)?       xor m1
       payload(i + 0x1)? = payload(i + 0x1)? xor m2
@@ -227,7 +232,7 @@ primitive _WebSocketDecodeHelper
       payload(i + 0xD)? = payload(i + 0xD)? xor m2
       payload(i + 0xE)? = payload(i + 0xE)? xor m3
       payload(i + 0xF)? = payload(i + 0xF)? xor m4
-      i = i + 16
+      i = i + 0x10
     end
     while i < payload_len do
       payload(i)? = payload(i)? xor mask_key(i % 4)?
