@@ -8,9 +8,6 @@ actor Main
   A simple HTTP server, that responds with a simple "hello world" in the response body.
   """
   new create(env: Env) =>
-    let x: U8 = not 0b0011_1111
-    let y: U8 = 0b1100_0000
-    env.out.print((x == y).string())
     for arg in env.args.values() do
       if (arg == "-h") or (arg == "--help") then
         _print_help(env)
@@ -95,6 +92,8 @@ class BackendHandler is Handler
       { (session: WebSocketSession): WebSocketHandler ref^ =>
         session.send_frame(Text("Welcome to the echo service!"))
         object ref is WebSocketHandler
+          fun box _session(): WebSocketSession => session
+
           fun ref text_received(payload: String) =>
             session.send_frame(Text(payload))
             try
