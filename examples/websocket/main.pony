@@ -92,7 +92,7 @@ class BackendHandler is Handler
       { (session: WebSocketSession): WebSocketHandler ref^ =>
         session.send_frame(Text("Welcome to the echo service!"))
         object ref is WebSocketHandler
-          fun box _session(): WebSocketSession => session
+          fun box current_session(): WebSocketSession => session
 
           fun ref text_received(payload: String) =>
             session.send_frame(Text(payload))

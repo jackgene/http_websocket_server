@@ -1,8 +1,8 @@
-trait WebSocketHandler
+interface WebSocketHandler
   """
   Interface implemented by the application to handle WebSocket events.
   """
-  fun box _session(): WebSocketSession
+  fun box current_session(): WebSocketSession
     """
     The current websocket session, to be set by application at initialization
     """
@@ -21,7 +21,7 @@ trait WebSocketHandler
     """
     Received a close frame.
     """
-    _session().dispose()
+    current_session().dispose()
 
   fun ref ping_received(payload: Array[U8 val] val) =>
     """
@@ -31,7 +31,7 @@ trait WebSocketHandler
       // If the payload fits in the incoming Ping, it will _always_ fit in a Pong
       // TODO think of a way to do this without being partial, perhaps:
       // `Pong.from_ping(Ping)`
-      _session().send_frame(Pong.with_payload(payload)?)
+      current_session().send_frame(Pong.with_payload(payload)?)
     end
 
   fun ref pong_received(payload: Array[U8 val] val) =>
