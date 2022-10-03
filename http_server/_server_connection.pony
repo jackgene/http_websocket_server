@@ -1,16 +1,18 @@
 use "net"
 use "collections"
+use "crypto"
+use "encode/base64"
 use "valbytes"
 use "debug"
 
-actor _ServerConnection is Session
+actor _ServerConnection is (Session & WebSocketSession)
   """
   Manages a stream of requests coming into a server from a single client,
   dispatches those request to a back-end, and returns the responses back
   to the client.
 
   """
-  let _protocol: _HTTPServerConnectionProtocol
+  var _protocol: (_HTTPServerConnectionProtocol | _WebSocketServerConnectionProtocol)
   let _config: ServerConfig
   let _conn: TCPConnection
   let _timeout: _ServerConnectionTimeout = _ServerConnectionTimeout
@@ -61,20 +63,35 @@ actor _ServerConnection is Session
     Initiate transmission of the HTTP Response message for the current
     Request.
     """
-    _protocol._send_start(response, request_id)
+    match _protocol
+    | let http: _HTTPServerConnectionProtocol =>
+      http._send_start(response, request_id)
+    else
+      Debug("Unable to send HTTP response on upgraded protocol")
+    end
 
   be send_chunk(data: ByteSeq val, request_id: RequestID) =>
     """
     Write low level outbound raw byte stream.
     """
-    _protocol._send_chunk(data, request_id)
+    match _protocol
+    | let http: _HTTPServerConnectionProtocol =>
+      http._send_chunk(data, request_id)
+    else
+      Debug("Unable to send HTTP response on upgraded protocol")
+    end
 
   be send_finished(request_id: RequestID) =>
     """
     We are done sending a response. We close the connection if
     `keepalive` was not requested.
     """
-    _protocol._send_finished(request_id)
+    match _protocol
+    | let http: _HTTPServerConnectionProtocol =>
+      http._send_finished(request_id)
+    else
+      Debug("Unable to send HTTP response on upgraded protocol")
+    end
 
   be send_cancel(request_id: RequestID) =>
     """
@@ -82,7 +99,12 @@ actor _ServerConnection is Session
 
     TODO: keep this???
     """
-    _protocol._cancel(request_id)
+    match _protocol
+    | let http: _HTTPServerConnectionProtocol =>
+      http._cancel(request_id)
+    else
+      Debug("Unable to send HTTP response on upgraded protocol")
+    end
 
 //// CONVENIENCE API
 
@@ -92,14 +114,24 @@ actor _ServerConnection is Session
 
     This function calls `send_finished` for you, so no need to call it yourself.
     """
-    _protocol._send_start(response, request_id)
-    _protocol._send_finished(request_id)
+    match _protocol
+    | let http: _HTTPServerConnectionProtocol =>
+      http._send_start(response, request_id)
+      http._send_finished(request_id)
+    else
+      Debug("Unable to send HTTP response on upgraded protocol")
+    end
 
   be send(response: Response val, body: ByteArrays, request_id: RequestID) =>
     """
     Start and finish sending a response with body.
     """
-    _protocol._send(response, body, request_id)
+    match _protocol
+    | let http: _HTTPServerConnectionProtocol =>
+      http._send(response, body, request_id)
+    else
+      Debug("Unable to send HTTP response on upgraded protocol")
+    end
 
 //// OPTIMIZED API
 
@@ -122,7 +154,100 @@ actor _ServerConnection is Session
 
     In each case, finish sending your raw response using `send_finished`.
     """
-    _protocol._send_raw(raw, request_id, close_session)
+    match _protocol
+    | let http: _HTTPServerConnectionProtocol =>
+      http._send_raw(raw, request_id, close_session)
+    else
+      Debug("Unable to send HTTP response on upgraded protocol")
+    end
+
+//// WebSocket API
+
+  be upgrade_to_websocket(request: Request val, request_id: RequestID, handlermaker: WebSocketHandlerFactory val) =>
+    """
+    Upgrades connection to WebSocket.
+    """
+    match _protocol
+    | let http: _HTTPServerConnectionProtocol =>
+      try
+        http._send_raw(_websocket_handshake(request)?, request_id)
+        _protocol = _WebSocketServerConnectionProtocol(
+          handlermaker(this), _config, _conn, _timeout)
+      else
+        let body = "Please upgrade to websocket/13"
+        let response = Responses.builder()
+          .set_status(StatusUpgradeRequired)
+          .add_header("Content-Type", "text/plain")
+          .add_header("Content-Length", body.size().string())
+          .add_header("Connection", "Upgrade")
+          .add_header("Upgrade", "websocket")
+          .add_header("sec-websocket-version", "13")
+          .finish_headers()
+          .add_chunk(body.array())
+          .build()
+        http._send_raw(response, RequestIDs.next(request_id))
+        http._send_finished(request_id)
+      end
+    else
+      Debug("Unable to send HTTP response on upgraded protocol")
+    end
+
+  fun _websocket_handshake(request: Request val): ByteSeqIter val ? =>
+    match (
+      request.header("sec-websocket-version"),
+      request.header("sec-websocket-key"),
+      request.header("upgrade"),
+      request.header("connection")
+    )
+    | (
+        let version: String,
+        let request_key: String,
+        let upgrade: String,
+        let connection: String
+      )
+      if (version == "13") and (upgrade.lower() == "websocket") =>
+
+      var conn_upgrade = false
+      for s in connection.split_by(",").values() do
+        if s.lower().>strip(" ") == "upgrade" then
+          conn_upgrade = true
+          break
+        end
+      end
+      if not conn_upgrade then error end
+
+      Responses.builder()
+        .set_status(StatusSwitchingProtocols)
+        .add_header("Connection", "Upgrade")
+        .add_header("Upgrade", "websocket")
+        .add_header("Sec-WebSocket-Accept", _websocket_accept_key(request_key))
+        .finish_headers()
+        .build()
+    else
+      error
+    end
+
+  fun _websocket_accept_key(key: String): String =>
+    let c = key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+    let digest = Digest.sha1()
+    try
+      digest.append(consume c)?
+    end
+    let d = digest.final()
+    Base64.encode(d)
+
+  be send_frame(frame: WebSocketFrame val) =>
+    _send_frame(frame)
+
+  fun ref _send_frame(frame: WebSocketFrame) =>
+    match _protocol
+    | let ws: _WebSocketServerConnectionProtocol =>
+      ws._send(frame)
+    else
+      Debug("Unable to send WebSocket frame in non-WebSocket mode")
+    end
+
+//// Connection Management
 
   be dispose() =>
     """
@@ -146,4 +271,3 @@ actor _ServerConnection is Session
       // backend is notified asynchronously when the close happened
       dispose()
     end
-
